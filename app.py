@@ -1,14 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
 from google import genai
 
 import base64
-import io
 import json
 import os
-import pandas as pd
-import numpy as np
+import re
 
 app = FastAPI()
 
@@ -20,7 +19,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+client = genai.Client(
+    api_key=os.environ["GEMINI_API_KEY"]
+)
 
 
 class AudioRequest(BaseModel):
@@ -33,40 +34,55 @@ def analyze(req: AudioRequest):
 
     try:
 
-        # --------------------------------------------------
-        # Decode base64 audio
-        # --------------------------------------------------
-
         audio_bytes = base64.b64decode(req.audio_base64)
 
-        audio = io.BytesIO(audio_bytes)
-
-        # --------------------------------------------------
-        # Ask Gemini to transcribe and extract a table
-        # --------------------------------------------------
-
         prompt = """
-You will receive an audio recording.
+You are given ONE audio recording.
 
-Transcribe it.
+Your job:
 
-If the speaker is describing a table or dataset,
-return ONLY JSON in this format:
+1. Transcribe the audio.
+2. If the audio contains or describes a dataset or table,
+   reconstruct the dataset.
+3. Compute ALL descriptive statistics.
+
+Return ONLY valid JSON.
+
+The JSON MUST contain EXACTLY these keys:
 
 {
-  "rows":[
-    {
-      "column1": value,
-      "column2": value
-    }
-  ]
+  "rows": 0,
+  "columns": [],
+  "mean": {},
+  "std": {},
+  "variance": {},
+  "min": {},
+  "max": {},
+  "median": {},
+  "mode": {},
+  "range": {},
+  "allowed_values": {},
+  "value_range": {},
+  "correlation": []
 }
 
-Return ONLY JSON.
+Rules:
+
+- No markdown.
+- No explanation.
+- No code fences.
+- rows must be an integer.
+- columns must be an array.
+- mean/std/variance/min/max/median/mode/range/allowed_values/value_range
+  must all be JSON objects.
+- correlation must be an array.
+- If a statistic cannot be computed,
+  return an empty object {} or empty array [] as appropriate.
 """
 
         response = client.models.generate_content(
-            model="gemini-3.5-flash",
+            # Replace this with a model your API key supports.
+            model="YOUR_SUPPORTED_GEMINI_MODEL",
             contents=[
                 prompt,
                 {
@@ -78,106 +94,51 @@ Return ONLY JSON.
 
         text = response.text.strip()
 
-        text = text.replace("```json", "").replace("```", "").strip()
+        text = re.sub(r"^```json", "", text)
+        text = re.sub(r"^```", "", text)
+        text = re.sub(r"```$", "", text)
+        text = text.strip()
 
-        data = json.loads(text)
+        match = re.search(r"\{.*\}", text, re.DOTALL)
 
-        df = pd.DataFrame(data["rows"])
+        if not match:
+            raise Exception("Gemini did not return JSON.")
 
-        # --------------------------------------------------
-        # Statistics
-        # --------------------------------------------------
+        result = json.loads(match.group())
 
-        numeric = df.select_dtypes(include=np.number)
+        required = [
+            "rows",
+            "columns",
+            "mean",
+            "std",
+            "variance",
+            "min",
+            "max",
+            "median",
+            "mode",
+            "range",
+            "allowed_values",
+            "value_range",
+            "correlation"
+        ]
 
-        result = {
-            "rows": len(df),
-            "columns": list(df.columns),
-            "mean": {},
-            "std": {},
-            "variance": {},
-            "min": {},
-            "max": {},
-            "median": {},
-            "mode": {},
-            "range": {},
-            "allowed_values": {},
-            "value_range": {},
-            "correlation": []
-        }
+        output = {}
 
-        # Numeric statistics
+        for key in required:
 
-        for col in numeric.columns:
-
-            result["mean"][col] = float(numeric[col].mean())
-
-            result["std"][col] = float(numeric[col].std())
-
-            result["variance"][col] = float(numeric[col].var())
-
-            result["min"][col] = float(numeric[col].min())
-
-            result["max"][col] = float(numeric[col].max())
-
-            result["median"][col] = float(numeric[col].median())
-
-            result["range"][col] = (
-                float(numeric[col].max())
-                - float(numeric[col].min())
-            )
-
-            result["value_range"][col] = [
-                float(numeric[col].min()),
-                float(numeric[col].max())
-            ]
-
-            m = numeric[col].mode()
-
-            if len(m):
-
-                result["mode"][col] = float(m.iloc[0])
-
+            if key in result:
+                output[key] = result[key]
             else:
+                if key == "rows":
+                    output[key] = 0
+                elif key in ("columns", "correlation"):
+                    output[key] = []
+                else:
+                    output[key] = {}
 
-                result["mode"][col] = None
-
-        # Categorical columns
-
-        for col in df.columns:
-
-            if col not in numeric.columns:
-
-                vals = list(df[col].dropna().unique())
-
-                result["allowed_values"][col] = vals
-
-        # Correlation matrix
-
-        if len(numeric.columns) >= 2:
-
-            corr = numeric.corr()
-
-            for c1 in corr.columns:
-
-                for c2 in corr.columns:
-
-                    if c1 != c2:
-
-                        result["correlation"].append({
-
-                            "column1": c1,
-
-                            "column2": c2,
-
-                            "value": float(corr.loc[c1, c2])
-
-                        })
-
-        return result
+        return output
 
     except Exception as e:
-
         raise HTTPException(
             status_code=500,
             detail=str(e)
