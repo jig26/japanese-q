@@ -82,7 +82,9 @@ Rules:
 
         response = client.models.generate_content(
             # Replace this with a model your API key supports.
-            model="YOUR_SUPPORTED_GEMINI_MODEL",
+            client = genai.Client(
+                api_key=os.environ["GEMINI_API_KEY"]
+            ),
             contents=[
                 prompt,
                 {
