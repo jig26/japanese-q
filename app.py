@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from google import genai
+from google.genai import types
 
 import base64
 import json
@@ -37,21 +38,20 @@ def analyze(req: AudioRequest):
         audio_bytes = base64.b64decode(req.audio_base64)
 
         prompt = """
-You are given ONE audio recording.
+You are given one audio recording.
 
-Your job:
+Listen to it carefully.
 
-1. Transcribe the audio.
-2. If the audio contains or describes a dataset or table,
-   reconstruct the dataset.
-3. Compute ALL descriptive statistics.
+If it contains spoken tabular data, reconstruct the table.
+
+Then compute all descriptive statistics.
 
 Return ONLY valid JSON.
 
-The JSON MUST contain EXACTLY these keys:
+Exactly this schema:
 
 {
-  "rows": 0,
+  "rows": integer,
   "columns": [],
   "mean": {},
   "std": {},
@@ -66,32 +66,22 @@ The JSON MUST contain EXACTLY these keys:
   "correlation": []
 }
 
-Rules:
+Do not explain.
+Do not use markdown.
+Do not wrap in ```.
 
-- No markdown.
-- No explanation.
-- No code fences.
-- rows must be an integer.
-- columns must be an array.
-- mean/std/variance/min/max/median/mode/range/allowed_values/value_range
-  must all be JSON objects.
-- correlation must be an array.
-- If a statistic cannot be computed,
-  return an empty object {} or empty array [] as appropriate.
+Return JSON only.
 """
 
         response = client.models.generate_content(
-            # Replace this with a model your API key supports.
-            client = genai.Client(
-                api_key=os.environ["GEMINI_API_KEY"]
-            ),
+            model="gemini-2.5-flash",
             contents=[
-                prompt,
-                {
-                    "mime_type": "audio/wav",
-                    "data": audio_bytes,
-                },
-            ],
+                types.Part.from_text(text=prompt),
+                types.Part.from_bytes(
+                    data=audio_bytes,
+                    mime_type="audio/wav"
+                )
+            ]
         )
 
         text = response.text.strip()
